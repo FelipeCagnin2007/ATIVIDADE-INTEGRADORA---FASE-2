@@ -1,8 +1,8 @@
-"""FIAP - Fase 2: MGPEB da missao Aurora Siger.
+"""FIAP - Fase 2: gerenciamento de pouso da missao Aurora Siger.
 
 Grupo 40 - Felipe Cagnin de Lima.
 Execute: python3 mgpeb.py
-Simulacao didatica: valores ficticios, sem controle de equipamentos reais.
+Simulacao didatica, sem controle de equipamentos reais.
 Usa apenas a biblioteca padrao do Python.
 """
 
@@ -29,13 +29,14 @@ def criar_sistema():
 
 
 def numero_valido(valor):
+    """Aceita numeros comuns; rejeita texto, booleanos, infinito e NaN."""
     return type(valor) in (int, float) and isfinite(valor)
 
 
 def validar_modulo(modulo):
-    for campo in ("id", "tipo_carga"):
+    for campo in ("identificador", "nome", "tipo_carga"):
         if not isinstance(modulo[campo], str) or not modulo[campo].strip():
-            raise ValueError("Identificador e tipo de carga sao obrigatorios.")
+            raise ValueError("Identificador, nome e tipo de carga sao obrigatorios.")
     if type(modulo["prioridade"]) is not int or not 1 <= modulo["prioridade"] <= 5:
         raise ValueError("A prioridade deve ser um inteiro de 1 a 5.")
     if type(modulo["criticidade"]) is not int or not 1 <= modulo["criticidade"] <= 5:
@@ -47,8 +48,8 @@ def validar_modulo(modulo):
         raise ValueError("Combustivel deve estar entre 0 e 100%.")
     if modulo["massa_kg"] <= 0 or modulo["chegada_min"] < 0:
         raise ValueError("Massa deve ser positiva e chegada nao pode ser negativa.")
-    if type(modulo["sensores_ok"]) is not bool:
-        raise ValueError("sensores_ok deve ser True ou False.")
+    if type(modulo["sensores_integros"]) is not bool:
+        raise ValueError("sensores_integros deve ser True ou False.")
 
 
 def validar_ambiente(ambiente):
@@ -59,10 +60,10 @@ def validar_ambiente(ambiente):
         raise ValueError("area_livre deve ser True ou False.")
 
 
-def buscar_por_id(modulos, identificador):
-    """Busca linear: percorre os registros ate encontrar o ID. O(n)."""
+def buscar_por_identificador(modulos, identificador):
+    """Busca linear: visita os registros ate encontrar o identificador."""
     for modulo in modulos:
-        if modulo["id"] == identificador:
+        if modulo["identificador"] == identificador:
             return modulo
     return None
 
@@ -77,39 +78,42 @@ def buscar_por_carga(modulos, tipo_carga):
 
 
 def buscar_menor_combustivel(modulos):
-    menor = None
+    modulo_com_menos_combustivel = None
     for modulo in modulos:
-        if menor is None or modulo["combustivel"] < menor["combustivel"]:
-            menor = modulo
-    return menor
+        if (modulo_com_menos_combustivel is None
+                or modulo["combustivel"] < modulo_com_menos_combustivel["combustivel"]):
+            modulo_com_menos_combustivel = modulo
+    return modulo_com_menos_combustivel
 
 
 def buscar_maior_prioridade(modulos):
     """Prioridade 1 e a mais alta; empates preservam a ordem de entrada."""
-    maior = None
+    modulo_prioritario = None
     for modulo in modulos:
-        if maior is None or modulo["prioridade"] < maior["prioridade"]:
-            maior = modulo
-    return maior
+        if (modulo_prioritario is None
+                or modulo["prioridade"] < modulo_prioritario["prioridade"]):
+            modulo_prioritario = modulo
+    return modulo_prioritario
 
 
 def cadastrar_modulo(sistema, modulo):
     validar_modulo(modulo)
     for estado in ("fila", "pousados", "espera", "alertas"):
-        if buscar_por_id(sistema[estado], modulo["id"]) is not None:
+        if buscar_por_identificador(sistema[estado], modulo["identificador"]) is not None:
             raise ValueError("Ja existe um modulo com esse identificador.")
     # Uma copia impede que a alteracao do dicionario de entrada mude o cadastro.
     sistema["fila"].append(modulo.copy())
 
 
 def chave_ordenacao(modulo):
-    """Ordem lexicografica: urgencia, prioridade, combustivel, carga, chegada."""
-    urgente = 0 if modulo["combustivel"] < COMBUSTIVEL_URGENTE else 1
+    """Compara os criterios na ordem em que aparecem na tupla."""
+    # O grupo 0 e avaliado antes do grupo 1. Urgencia nao dispensa seguranca.
+    grupo_de_urgencia = 0 if modulo["combustivel"] < COMBUSTIVEL_URGENTE else 1
     return (
-        urgente,
+        grupo_de_urgencia,
         modulo["prioridade"],
         modulo["combustivel"],
-        -modulo["criticidade"],
+        -modulo["criticidade"],  # O sinal negativo coloca a maior criticidade antes.
         modulo["chegada_min"],
     )
 
@@ -120,57 +124,74 @@ def ordenar_fila(sistema):
     Reorganiza apenas os candidatos. Uma posicao melhor nao libera um pouso.
     Custo O(n^2) no pior caso, adequado aos cinco modulos deste exemplo.
     """
-    ordenados = list(sistema["fila"])
-    for indice in range(1, len(ordenados)):
-        atual = ordenados[indice]
-        anterior = indice - 1
-        while anterior >= 0 and chave_ordenacao(ordenados[anterior]) > chave_ordenacao(atual):
-            ordenados[anterior + 1] = ordenados[anterior]
-            anterior -= 1
-        ordenados[anterior + 1] = atual
-    sistema["fila"] = deque(ordenados)
+    modulos_ordenados = list(sistema["fila"])
+    for indice in range(1, len(modulos_ordenados)):
+        modulo_atual = modulos_ordenados[indice]
+        indice_anterior = indice - 1
+        # Abre espaco para inserir o modulo na posicao correta.
+        while (indice_anterior >= 0
+               and chave_ordenacao(modulos_ordenados[indice_anterior])
+               > chave_ordenacao(modulo_atual)):
+            modulos_ordenados[indice_anterior + 1] = modulos_ordenados[indice_anterior]
+            indice_anterior -= 1
+        modulos_ordenados[indice_anterior + 1] = modulo_atual
+    sistema["fila"] = deque(modulos_ordenados)
 
 
-def regra_principal(combustivel_ok, atmosfera_ok, area_livre, sensores_ok):
-    """Porta AND: P0 = C AND A AND L AND S."""
-    return combustivel_ok and atmosfera_ok and area_livre and sensores_ok
+def requisitos_basicos_atendidos(
+        combustivel_suficiente, vento_seguro, area_livre, sensores_integros):
+    """Porta AND (E): todas as quatro condicoes precisam ser verdadeiras."""
+    return (combustivel_suficiente and vento_seguro
+            and area_livre and sensores_integros)
 
 
 def avaliar_pouso(modulo, ambiente):
-    """P = P0 AND M AND T. Alerta B = NOT C OR NOT S OR NOT M."""
+    """Decide entre pouso autorizado, alerta e espera; informa cada motivo."""
     validar_modulo(modulo)
     validar_ambiente(ambiente)
-    sinais = {
-        "C": modulo["combustivel"] >= COMBUSTIVEL_MINIMO,
-        "A": ambiente["vento_kmh"] <= VENTO_MAXIMO,
-        "L": ambiente["area_livre"],
-        "S": modulo["sensores_ok"],
-        "M": modulo["massa_kg"] <= MASSA_MAXIMA,
-        "T": modulo["chegada_min"] <= ambiente["tempo_min"],
+    condicoes = {
+        "combustivel_suficiente": modulo["combustivel"] >= COMBUSTIVEL_MINIMO,
+        "vento_seguro": ambiente["vento_kmh"] <= VENTO_MAXIMO,
+        "area_livre": ambiente["area_livre"],
+        "sensores_integros": modulo["sensores_integros"],
+        "massa_permitida": modulo["massa_kg"] <= MASSA_MAXIMA,
+        "chegou_a_orbita": modulo["chegada_min"] <= ambiente["tempo_min"],
     }
-    principal = regra_principal(sinais["C"], sinais["A"], sinais["L"], sinais["S"])
-    autorizado = principal and sinais["M"] and sinais["T"]
-    alerta = not sinais["C"] or not sinais["S"] or not sinais["M"]
-    descricoes = {
-        "C": "combustivel abaixo de 20%",
-        "A": "vento acima de 40 km/h",
-        "L": "area de pouso ocupada",
-        "S": "falha nos sensores",
-        "M": "massa acima de 10000 kg",
-        "T": "modulo ainda nao chegou a orbita",
+    requisitos_basicos = requisitos_basicos_atendidos(
+        condicoes["combustivel_suficiente"], condicoes["vento_seguro"],
+        condicoes["area_livre"], condicoes["sensores_integros"],
+    )
+    pouso_autorizado = (requisitos_basicos and condicoes["massa_permitida"]
+                       and condicoes["chegou_a_orbita"])
+    alerta_necessario = (not condicoes["combustivel_suficiente"]
+                        or not condicoes["sensores_integros"]
+                        or not condicoes["massa_permitida"])
+
+    motivos_de_bloqueio = {
+        "combustivel_suficiente": "combustivel abaixo de 20%",
+        "vento_seguro": "vento acima de 40 km/h",
+        "area_livre": "area de pouso ocupada",
+        "sensores_integros": "falha nos sensores",
+        "massa_permitida": "massa acima de 10000 kg",
+        "chegou_a_orbita": "modulo ainda nao chegou a orbita",
     }
-    motivos = [texto for sinal, texto in descricoes.items() if not sinais[sinal]]
-    if autorizado:
+    motivos = []
+    for nome_condicao, descricao in motivos_de_bloqueio.items():
+        if not condicoes[nome_condicao]:
+            motivos.append(descricao)
+
+    # AND autoriza; NOT e OR identificam falhas que precisam de revisao.
+    if pouso_autorizado:
         status = "AUTORIZADO"
-    elif alerta:
+    elif alerta_necessario:
         status = "ALERTA"
     else:
         status = "ESPERA"
-    return {"status": status, "motivos": motivos, "sinais": sinais}
+    return {"status": status, "motivos": motivos, "condicoes": condicoes}
 
 
 def processar_proximo(sistema, ambiente):
-    """FIFO apos a ordenacao; simula somente uma autorizacao por chamada."""
+    """Retira o primeiro da fila e avalia somente um modulo por chamada."""
     validar_ambiente(ambiente)
     if not sistema["fila"]:
         return None
@@ -178,11 +199,12 @@ def processar_proximo(sistema, ambiente):
     decisao = avaliar_pouso(modulo, ambiente)
     sistema["fila"].popleft()
     evento = {
-        "id": modulo["id"],
+        "identificador": modulo["identificador"],
+        "nome": modulo["nome"],
         "tempo_min": ambiente["tempo_min"],
         "status": decisao["status"],
         "motivos": decisao["motivos"],
-        "sinais": decisao["sinais"],
+        "condicoes": decisao["condicoes"],
     }
     if decisao["status"] == "AUTORIZADO":
         sistema["pousados"].append(modulo)
@@ -213,62 +235,89 @@ def reenfileirar_espera(sistema):
 
 
 def revisar_ultimo_alerta(sistema):
-    """LIFO: retirar da pilha registra a revisao, sem liberar o modulo."""
+    """Revisa o alerta mais recente; o modulo continua bloqueado."""
     if not sistema["pilha_alertas"]:
         return None
     evento = sistema["pilha_alertas"].pop()
     sistema["historico"].append({
-        "id": evento["id"],
+        "identificador": evento["identificador"],
+        "nome": evento["nome"],
         "status": "ALERTA REVISADO",
         "motivos": ["Revisao registrada; modulo permanece bloqueado."],
     })
     return evento
 
 
-def altura_descida(tempo_s):
+def altura_descida(tempo_segundos):
     """h(t) = 1000 - 20t + 0.1t^2, em metros, para 0 <= t <= 100 s.
 
     Modelo cinematico idealizado de uma etapa final ja desacelerada.
     Nao representa queda livre nem inclui arrasto, gravidade e controle real.
     """
-    if not numero_valido(tempo_s) or not 0 <= tempo_s <= 100:
+    if not numero_valido(tempo_segundos) or not 0 <= tempo_segundos <= 100:
         raise ValueError("O modelo de altura vale somente de 0 a 100 segundos.")
-    return 1000 - 20 * tempo_s + 0.1 * tempo_s ** 2
+    return 1000 - 20 * tempo_segundos + 0.1 * tempo_segundos ** 2
 
 
 def criar_exemplo():
     """Dados ficticios; chegada em minutos a partir do inicio da operacao."""
-    dados = [
-        ("HAB01", "habitacao", 3, 55, 8500, 3, 0, True),
-        ("ENE01", "energia", 1, 60, 6200, 5, 0, True),
-        ("LAB01", "laboratorio", 4, 45, 4500, 2, 15, False),
-        ("LOG01", "logistica", 5, 15, 9000, 2, 10, True),
-        ("MED01", "medico", 2, 25, 3800, 5, 5, True),
+    # Cada valor tem seu campo escrito ao lado, sem depender de uma tupla posicional.
+    modulos = [
+        {
+            "identificador": "HAB01", "nome": "Habitacao", "tipo_carga": "habitacao",
+            "prioridade": 3, "combustivel": 55, "massa_kg": 8500,
+            "criticidade": 3, "chegada_min": 0, "sensores_integros": True,
+        },
+        {
+            "identificador": "ENE01", "nome": "Energia", "tipo_carga": "energia",
+            "prioridade": 1, "combustivel": 60, "massa_kg": 6200,
+            "criticidade": 5, "chegada_min": 0, "sensores_integros": True,
+        },
+        {
+            "identificador": "LAB01", "nome": "Laboratorio", "tipo_carga": "laboratorio",
+            "prioridade": 4, "combustivel": 45, "massa_kg": 4500,
+            "criticidade": 2, "chegada_min": 15, "sensores_integros": False,
+        },
+        {
+            "identificador": "LOG01", "nome": "Logistica", "tipo_carga": "logistica",
+            "prioridade": 5, "combustivel": 15, "massa_kg": 9000,
+            "criticidade": 2, "chegada_min": 10, "sensores_integros": True,
+        },
+        {
+            "identificador": "MED01", "nome": "Suporte medico", "tipo_carga": "medico",
+            "prioridade": 2, "combustivel": 25, "massa_kg": 3800,
+            "criticidade": 5, "chegada_min": 5, "sensores_integros": True,
+        },
     ]
-    campos = ("id", "tipo_carga", "prioridade", "combustivel", "massa_kg",
-              "criticidade", "chegada_min", "sensores_ok")
     sistema = criar_sistema()
-    for valores in dados:
-        cadastrar_modulo(sistema, dict(zip(campos, valores)))
+    for modulo in modulos:
+        cadastrar_modulo(sistema, modulo)
     return sistema
+
+
+def descrever_modulo(modulo):
+    """Mostra o nome da carga junto de seu identificador de cadastro."""
+    return f'{modulo["nome"]} ({modulo["identificador"]})'
 
 
 def mostrar_evento(evento):
     motivos = "; ".join(evento["motivos"]) or "todos os requisitos atendidos"
-    print(f'{evento["id"]}: {evento["status"]} - {motivos}')
+    print(f'{descrever_modulo(evento)}: {evento["status"]} - {motivos}')
 
 
 def demonstracao():
     sistema = criar_exemplo()
     ambiente = {"tempo_min": 20, "vento_kmh": 25, "area_livre": True}
-    print("MGPEB - Aurora Siger | Grupo 40")
+    print("Gerenciamento de pouso - Aurora Siger | Grupo 40")
     print("Simulacao didatica; dados e limites ficticios.\n")
-    print("Menor combustivel:", buscar_menor_combustivel(sistema["fila"])["id"])
-    print("Maior prioridade:", buscar_maior_prioridade(sistema["fila"])["id"])
-    print("Carga medica:", [m["id"] for m in buscar_por_carga(sistema["fila"], "medico")])
-    print("Busca por ID HAB01:", buscar_por_id(sistema["fila"], "HAB01")["tipo_carga"])
+    print("Menor combustivel:", descrever_modulo(buscar_menor_combustivel(sistema["fila"])))
+    print("Maior prioridade:", descrever_modulo(buscar_maior_prioridade(sistema["fila"])))
+    cargas_medicas = buscar_por_carga(sistema["fila"], "medico")
+    print("Carga medica:", [descrever_modulo(modulo) for modulo in cargas_medicas])
+    print("Busca por identificador HAB01:",
+          descrever_modulo(buscar_por_identificador(sistema["fila"], "HAB01")))
     ordenar_fila(sistema)
-    print("Fila ordenada:", " -> ".join(m["id"] for m in sistema["fila"]))
+    print("Fila ordenada:", " -> ".join(descrever_modulo(modulo) for modulo in sistema["fila"]))
     print("\nRodada 1 (sem liberar a area entre candidatos):")
     while sistema["fila"]:
         mostrar_evento(processar_proximo(sistema, ambiente))
@@ -288,16 +337,16 @@ def demonstracao():
         mostrar_evento(evento)
         if evento["status"] == "AUTORIZADO":
             liberar_area(ambiente)
-    print("\nPilha de alertas (ordem de revisao LIFO):")
+    print("\nPilha de alertas (o ultimo registrado e revisado primeiro):")
     while sistema["pilha_alertas"]:
         evento = revisar_ultimo_alerta(sistema)
-        print(evento["id"], "revisado; permanece em alerta.")
+        print(descrever_modulo(evento), "revisado; permanece em alerta.")
     print("\nResumo final:")
     for estado in ("fila", "pousados", "espera", "alertas"):
-        print(estado + ":", [m["id"] for m in sistema[estado]])
+        print(estado + ":", [descrever_modulo(modulo) for modulo in sistema[estado]])
     print("\nAltura na etapa final da descida (tempo em segundos):")
     for tempo in (0, 20, 40, 60, 80, 100):
-        print(f"t = {tempo:3d} s | h = {altura_descida(tempo):6.1f} m")
+        print(f"Tempo: {tempo:3d} segundos | Altura: {altura_descida(tempo):6.1f} metros")
 
 
 if __name__ == "__main__":
